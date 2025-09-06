@@ -20,9 +20,10 @@ class Brand(BaseModel):
 
 class Brief(BaseModel):
     product: str
-    audience: str
-    value_props: List[str]
-    cta: str
+    price: str
+    place: str
+    promotion: str
+    people: str
     channels: List[str] = ["Instagram"]
     regions: List[str] = ["IN", "US"]
 
