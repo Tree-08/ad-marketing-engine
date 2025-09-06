@@ -1,43 +1,109 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Wand2 } from "lucide-react"
+import Image from "next/image"
+import { useRouter } from "next/navigation"
 
 export default function OutputPage() {
+  const router = useRouter()
   const [selectedImage, setSelectedImage] = useState<number | null>(null)
   const [feedback, setFeedback] = useState("")
   const [messageBox, setMessageBox] = useState({ isVisible: false, title: "", message: "" });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [images, setImages] = useState<string[]>([])
+  const [fiveps, setFiveps] = useState<any>(null)
+
+  const [imagesLoading, setImagesLoading] = useState(false)
+
+  useEffect(() => {
+    try {
+      const arr = JSON.parse(localStorage.getItem("image_urls") || "[]")
+      const fp = JSON.parse(localStorage.getItem("fiveps") || "null")
+      setImages(arr)
+      setFiveps(fp)
+      const pending = localStorage.getItem("pending_generate") === "1"
+      if ((arr.length === 0 || pending) && fp) {
+        // Kick off generation on this page so user sees loading state
+        ;(async () => {
+          try {
+            setImagesLoading(true)
+            const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000"
+            const res = await fetch(`${API_BASE}/api/v1/generate`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                product: fp.product,
+                price: fp.price,
+                place: fp.place,
+                promotion: fp.promotion,
+                people: fp.people,
+              }),
+            })
+            if (!res.ok) throw new Error(await res.text())
+            const data = await res.json()
+            const urls: string[] = data.image_urls || (data.image_url ? [data.image_url] : [])
+            setImages(urls)
+            localStorage.setItem("image_urls", JSON.stringify(urls))
+          } catch (e) {
+            console.error(e)
+            setMessageBox({ isVisible: true, title: "Error", message: "Failed to generate creatives." })
+          } finally {
+            setImagesLoading(false)
+            localStorage.removeItem("pending_generate")
+          }
+        })()
+      }
+    } catch {}
+  }, [])
 
   const handleImageSelect = (index: number) => {
     setSelectedImage(index)
   }
 
-  const handleFeedbackSubmit = () => {
-    if (selectedImage === null || !feedback.trim()) {
+  const handleFeedbackSubmit = async () => {
+    if (selectedImage === null) {
       setMessageBox({
         isVisible: true,
         title: "Feedback Required",
-        message: "Please select a creative and provide feedback before submitting."
+        message: "Please select a creative before regenerating."
       });
       return;
     }
-
     setIsSubmitting(true);
-    console.log("Selected Image:", selectedImage + 1)
-    console.log("Feedback:", feedback)
-
-    // Simulate backend logic
-    setTimeout(() => {
-      setIsSubmitting(false);
-      setMessageBox({
-        isVisible: true,
-        title: "Feedback Submitted",
-        message: "Your feedback has been received. A new creative is being generated!"
-      });
-      // In a real application, you'd handle the new creative generation here.
-    }, 2000);
+    setImagesLoading(true)
+    try {
+      const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000"
+      const selected_url = images[selectedImage]
+      const res = await fetch(`${API_BASE}/api/v1/regenerate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          product: fiveps?.product || "",
+          price: fiveps?.price || "",
+          place: fiveps?.place || "",
+          promotion: fiveps?.promotion || "",
+          people: fiveps?.people || "",
+          selected_image_url: selected_url,
+          feedback,
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      const urls: string[] = data.image_urls || []
+      setImages(urls)
+      localStorage.setItem("image_urls", JSON.stringify(urls))
+      setSelectedImage(null)
+      setFeedback("")
+      setMessageBox({ isVisible: true, title: "Regenerated", message: "Created 4 new variants based on your selection." })
+    } catch (e: any) {
+      console.error(e)
+      setMessageBox({ isVisible: true, title: "Error", message: e?.message || "Regenerate failed" })
+    } finally {
+      setIsSubmitting(false)
+      setImagesLoading(false)
+    }
   }
 
   const handleCloseMessageBox = () => {
@@ -45,23 +111,75 @@ export default function OutputPage() {
   };
 
   const handleBackToInput = () => {
-    console.log("Navigate back to input page")
-    // Backend will implement navigation logic
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000"
+    const urls = images
+    // Fire-and-forget cleanup; don't block navigation
+    navigator.sendBeacon?.(
+      `${API_BASE}/api/v1/cleanup`,
+      new Blob([JSON.stringify({ image_urls: urls })], { type: "application/json" })
+    )
+    localStorage.removeItem("image_urls")
+    localStorage.removeItem("pending_generate")
+    router.push("/")
   }
 
   const handleGoHome = () => {
-    console.log("Navigate to home page")
-    // Backend will implement navigation logic
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000"
+    const urls = images
+    navigator.sendBeacon?.(
+      `${API_BASE}/api/v1/cleanup`,
+      new Blob([JSON.stringify({ image_urls: urls })], { type: "application/json" })
+    )
+    localStorage.removeItem("image_urls")
+    localStorage.removeItem("pending_generate")
+    router.push("/")
   }
 
-  const handleDownloadImage = (imageIndex: number) => {
-    console.log("Download image:", imageIndex + 1)
-    // Backend will implement download logic
+  const handleDownloadImage = async (imageIndex: number) => {
+    try {
+      const url = images[imageIndex]
+      const filename = (url.split("/").pop() || "creative.png").split("?")[0]
+      // Fetch the image as a Blob to force a real download (works cross-origin)
+      const resp = await fetch(url, { mode: "cors" })
+      if (!resp.ok) throw new Error("Failed to fetch image for download")
+      const blob = await resp.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = blobUrl
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(blobUrl)
+    } catch (e) {
+      console.error(e)
+      // Fallback: open in new tab if download fails
+      const url = images[imageIndex]
+      window.open(url, "_blank")
+    }
   }
+
+  // Best-effort cleanup when tab/window closes
+  useEffect(() => {
+    const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000"
+    const onUnload = () => {
+      const urls = JSON.parse(localStorage.getItem("image_urls") || "[]")
+      if (urls && urls.length && navigator.sendBeacon) {
+        const data = new Blob([JSON.stringify({ image_urls: urls })], { type: "application/json" })
+        navigator.sendBeacon(`${API_BASE}/api/v1/cleanup`, data)
+      }
+      // Do not clear localStorage here to allow retry if beacon fails
+    }
+    window.addEventListener("pagehide", onUnload)
+    window.addEventListener("beforeunload", onUnload)
+    return () => {
+      window.removeEventListener("pagehide", onUnload)
+      window.removeEventListener("beforeunload", onUnload)
+    }
+  }, [])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50 relative overflow-hidden">
-      {/* Background floating elements */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-20 left-10 w-32 h-32 bg-gradient-to-br from-purple-400/20 to-pink-400/20 rounded-full blur-xl"></div>
         <div className="absolute top-40 right-20 w-24 h-24 bg-gradient-to-br from-blue-400/20 to-cyan-400/20 rounded-full blur-xl"></div>
@@ -82,7 +200,6 @@ export default function OutputPage() {
           </div>
         </div>
 
-        {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-4xl md:text-5xl font-bold text-gray-800 mb-4">Generated Marketing Creatives</h1>
           <p className="text-lg text-gray-600 max-w-2xl mx-auto">
@@ -90,30 +207,28 @@ export default function OutputPage() {
           </p>
         </div>
 
-        {/* Image Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-          {[1, 2, 3, 4].map((imageNum) => (
+          {(imagesLoading ? [null, null, null, null] : (images.length ? images : [null, null, null, null])).map((u, idx) => (
             <Card
-              key={imageNum}
-              className={`cursor-pointer transition-all duration-300 hover:shadow-xl ${
-                selectedImage === imageNum - 1 ? "ring-4 ring-purple-500 shadow-2xl" : "hover:shadow-lg"
+              key={idx}
+              className={`bg-white cursor-pointer transition-all duration-300 hover:shadow-xl ${
+                selectedImage === idx ? "ring-4 ring-purple-500 shadow-2xl" : "hover:shadow-lg"
               }`}
-              onClick={() => handleImageSelect(imageNum - 1)}
+              onClick={() => handleImageSelect(idx)}
             >
               <CardContent className="p-6">
-                <div className="aspect-video bg-gradient-to-br from-gray-100 to-gray-200 rounded-lg flex items-center justify-center mb-4">
-                  <div className="text-center">
-                    <div className="w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center mb-3 mx-auto">
-                      <span className="text-white text-2xl font-bold">{imageNum}</span>
-                    </div>
-                    <p className="text-gray-500 font-medium">Creative {imageNum}</p>
-                    <p className="text-sm text-gray-400">Generated Marketing Visual</p>
-                  </div>
+                <div className="aspect-video bg-white rounded-lg flex items-center justify-center mb-4 overflow-hidden border border-gray-200">
+                  {u ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={u} alt={`Creative ${idx + 1}`} className="w-full h-full object-contain bg-white" />
+                  ) : (
+                    <div className="w-full h-full animate-pulse bg-white/70"></div>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between">
                   <div>
-                    {selectedImage === imageNum - 1 && (
+                    {selectedImage === idx && (
                       <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800">
                         ✓ Selected
                       </span>
@@ -122,7 +237,7 @@ export default function OutputPage() {
                   <div
                     onClick={(e) => {
                       e.stopPropagation()
-                      handleDownloadImage(imageNum - 1)
+                      handleDownloadImage(idx)
                     }}
                     className="flex items-center gap-1 px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg cursor-pointer transition-all duration-200"
                   >
@@ -142,10 +257,9 @@ export default function OutputPage() {
           ))}
         </div>
 
-        {/* Feedback Section */}
-        <Card className="max-w-4xl mx-auto mb-8">
+        <Card className="max-w-4xl mx-auto mb-8 bg-white/80 backdrop-blur-sm border border-gray-200 shadow-lg rounded-2xl">
           <CardContent className="p-8">
-            <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Provide Feedback for Improvements</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-6 text-center">Provide Feedback for Improvements</h2>
 
             {selectedImage !== null && (
               <div className="mb-4 text-center">
@@ -163,7 +277,7 @@ export default function OutputPage() {
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="Describe the changes you'd like to see... (e.g., change colors, modify text, adjust layout, different style, etc.)"
-                className="w-full h-32 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
+                className="w-full h-32 px-4 py-3 bg-white/70 border border-gray-200 rounded-xl placeholder:text-gray-500 text-gray-800 focus:ring-2 focus:ring-purple-200 focus:border-purple-300 transition resize-none"
               />
             </div>
 
@@ -186,7 +300,6 @@ export default function OutputPage() {
           </CardContent>
         </Card>
 
-        {/* Home Button */}
         <div className="flex justify-center">
           <div
             onClick={handleGoHome}
@@ -205,7 +318,6 @@ export default function OutputPage() {
         </div>
       </div>
 
-      {/* Custom Message Box Modal */}
       {messageBox.isVisible && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex justify-center items-center z-50">
           <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4">
