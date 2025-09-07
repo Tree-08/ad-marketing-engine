@@ -20,6 +20,15 @@ class ReGenRequest(FivePsRequest):
 class CleanupRequest(BaseModel):
     image_urls: list[str] = []
 
+class SocialCopyRequest(BaseModel):
+    platform: str  # instagram | linkedin | twitter | youtube
+    product: str
+    price: str
+    place: str
+    promotion: str
+    people: str
+    feedback: str | None = None
+
 # --- Router ---
 router = APIRouter()
 
@@ -118,3 +127,19 @@ async def cleanup_images(payload: CleanupRequest):
         except Exception:
             continue
     return {"deleted": deleted}
+
+@router.post("/api/v1/social_copy")
+async def social_copy(payload: SocialCopyRequest):
+    try:
+        fiveps = {
+            "product": payload.product,
+            "price": payload.price,
+            "place": payload.place,
+            "promotion": payload.promotion,
+            "people": payload.people,
+        }
+        data = engine.generate_social_copy(payload.platform, fiveps, feedback=payload.feedback)
+        return data
+    except Exception as e:
+        print(f"social_copy error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate social copy")

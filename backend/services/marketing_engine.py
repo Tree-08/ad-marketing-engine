@@ -279,3 +279,103 @@ class MarketingEngine:
             # Fallback: write raw bytes; better to have a file than fail
             with open(filepath, "wb") as f:
                 f.write(img_bytes)
+
+    # -------- Social copy (title + caption) --------
+    def generate_social_copy(self, platform: str, fiveps_data: dict, feedback: str | None = None) -> dict:
+        """Generate platform-tailored title + caption using Gemini text model."""
+        plat = (platform or "").lower()
+        if plat not in {"instagram", "linkedin", "twitter", "youtube"}:
+            plat = "instagram"
+
+        limits = {
+            "instagram": "Caption <= 2,000 chars, include 5-10 relevant hashtags at end.",
+            "linkedin": "Caption <= 1,000 chars, professional tone, no more than 5 hashtags.",
+            "twitter": "Tweet <= 280 chars, concise, 1-3 hashtags.",
+            "youtube": "Title <= 70 chars; description <= 4,000 chars, first line compelling.",
+        }[plat]
+
+        text_model = genai.GenerativeModel(model_name=self.text_model_name)
+        gen_cfg = genai.GenerationConfig(response_mime_type="application/json", max_output_tokens=600, temperature=0.6)
+
+        key = self._key_from_5ps(fiveps_data)
+        history = self._feedback_memory.get(key, [])
+        payload = {
+            "platform": plat,
+            "fiveps": fiveps_data,
+            "feedback_history": history,
+            "current_feedback": (feedback or "").strip(),
+            "constraints": limits,
+        }
+        prompt = (
+            "You are a social media copywriter. Create platform-tailored copy from the 5Ps and feedback.\n"
+            "Return ONLY JSON with keys: title, caption, hashtags (array). Keep it safe and brand-appropriate."
+        )
+        resp = text_model.generate_content([prompt, json.dumps(payload)], generation_config=gen_cfg)
+        txt = getattr(resp, "text", "{}")
+        try:
+            data = json.loads(txt.strip().strip("`"))
+        except Exception:
+            data = {}
+        def tidy_text(s: str) -> str:
+            s = (s or "").strip()
+            # Capitalize first letter of each sentence; ensure terminal punctuation
+            import re
+            parts = re.split(r"([.!?]\s+)", s)
+            out = []
+            for i in range(0, len(parts), 2):
+                seg = parts[i].strip()
+                if not seg:
+                    continue
+                seg = seg[:1].upper() + seg[1:]
+                punct = parts[i+1] if i+1 < len(parts) else ". "
+                if not re.search(r"[.!?]$", seg):
+                    out.append(seg + punct.strip())
+                else:
+                    out.append(seg)
+            txt = " ".join(out).strip()
+            return txt
+
+        raw_title = data.get("title") or f"Introducing {fiveps_data.get('product','')}"
+        raw_caption = data.get("caption") or fiveps_data.get("promotion", "")
+        title = tidy_text(raw_title)
+        caption = tidy_text(raw_caption)
+        hashtags = data.get("hashtags") or []
+        # Minimal post-process for Twitter limit
+        if plat == "twitter" and len(caption) > 275:
+            caption = caption[:272] + "…"
+        # Extract simple contact info from feedback if present
+        contact_email = None
+        website = None
+        phone = None
+        import re
+        text_blob = " ".join([fiveps_data.get("promotion", ""), feedback or "", caption])
+        m = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text_blob)
+        if m: contact_email = m.group(0)
+        u = re.search(r"(https?://\S+|www\.[\w.-]+\.[A-Za-z]{2,})", text_blob)
+        if u: website = u.group(0)
+        p = re.search(r"(\+?\d[\d\s()\-]{6,}\d)", text_blob)
+        if p: phone = p.group(0)
+
+        # Guess a company/handle if possible
+        company_name = None
+        # naive: try to grab proper-noun-ish words from product
+        prod = (fiveps_data.get("product") or "").strip()
+        if prod:
+            company_name = prod.split(" for ")[0].split(" – ")[0].split(" - ")[0].strip()
+            # Title-case the guessed name for display
+            company_name = " ".join([w.capitalize() for w in company_name.split()])
+        if not company_name:
+            company_name = "yourcompany"
+        handle = "@" + re.sub(r"[^a-z0-9]", "", company_name.lower())[:15]
+
+        return {
+            "title": title,
+            "caption": caption,
+            "hashtags": hashtags,
+            "company_name": company_name,
+            "handle": handle,
+            "contact_email": contact_email,
+            "website": website,
+            "phone": phone,
+            "sponsored": True,
+        }

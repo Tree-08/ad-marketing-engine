@@ -297,6 +297,30 @@ export default function OutputPage() {
                 "Submit Feedback & Regenerate"
               )}
             </div>
+
+            {/* Create Social Post button */}
+            <div
+              onClick={() => {
+                if (selectedImage === null) {
+                  setMessageBox({ isVisible: true, title: "Select a Creative", message: "Please select one of the creatives first." })
+                  return
+                }
+                try {
+                  const selected_url = images[selectedImage]
+                  localStorage.setItem("social_selected_image", selected_url)
+                  localStorage.setItem("social_feedback", feedback || "")
+                  // Reuse fiveps stored earlier
+                  router.push("/social")
+                } catch (e) {
+                  console.error(e)
+                  setMessageBox({ isVisible: true, title: "Error", message: "Could not prepare social post." })
+                }
+              }}
+              className="w-full mt-3 h-12 rounded-lg cursor-pointer flex items-center justify-center text-white font-semibold transition-all duration-300 hover:shadow-lg"
+              style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)" }}
+            >
+              Create Social Post
+            </div>
           </CardContent>
         </Card>
 
